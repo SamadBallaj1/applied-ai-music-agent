@@ -2,15 +2,17 @@
 Agentic layer on top of the rule-based recommender.
 
 The agent reads a natural-language request, picks taste preferences,
-calls recommend_songs as a tool, and writes a friendly final answer.
+calls recommend_songs, validates the results against the user's
+constraints, and retries with adjustments if something looks off.
 """
 
 import json
+import logging
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 try:
     from recommender import load_songs, recommend_songs
@@ -21,17 +23,25 @@ load_dotenv()
 
 MODEL = "gpt-4o-mini"
 
+logger = logging.getLogger(__name__)
+
 SYSTEM_PROMPT = """You are a music recommendation assistant.
 
-You have one tool: recommend_songs. Always use it. Do not invent songs.
+You have two tools:
+- recommend_songs: scores the catalog and returns top picks
+- validate_results: checks the picks against the user's constraints and flags issues
 
-Steps for every request:
-1. Read the user's words and pick taste preferences.
-2. Call recommend_songs with those preferences.
-3. Read the results and write a short, friendly answer that names the top picks
-   and explains why they fit, in plain English.
+Workflow for every request:
+1. Read the user's words and pick taste preferences. Pull out hard constraints
+   (e.g. "no acoustic" -> exclude_acoustic=true, "low energy" -> max_energy=0.4).
+2. Call recommend_songs with those preferences and constraints.
+3. Call validate_results with the same user message and the picks you got back.
+4. If validate_results returns any issues, adjust your preferences or constraints
+   and call recommend_songs again. Then validate again.
+5. Once validation passes (or after one retry), write a short, friendly answer
+   that names the top picks and explains why they fit, in plain English.
 
-Catalog facts:
+Catalog:
 - Genres: pop, lofi, rock, ambient, jazz, synthwave, indie pop, hip-hop, r&b,
   country, classical, edm, latin, metal, folk
 - Moods: happy, chill, intense, relaxed, focused, moody
@@ -39,7 +49,7 @@ Catalog facts:
 
 If the user says "study" or "focus", treat that as mood=focused or chill, low-mid energy.
 If the user says "workout" or "gym", treat that as high energy and intense or happy mood.
-If the user mentions acoustic, set likes_acoustic=true.
+Always call recommend_songs. Never invent songs.
 """
 
 TOOLS = [
@@ -47,7 +57,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "recommend_songs",
-            "description": "Score the catalog against the user's preferences and return the top K songs with explanations.",
+            "description": "Score the catalog against the user's preferences and return the top K songs.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -64,23 +74,63 @@ TOOLS = [
                         "default": "balanced",
                     },
                     "diversity": {"type": "boolean", "default": True},
+                    "exclude_acoustic": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Hard filter: drop any song with acousticness > 0.6.",
+                    },
+                    "min_energy": {"type": "number", "minimum": 0, "maximum": 1},
+                    "max_energy": {"type": "number", "minimum": 0, "maximum": 1},
                 },
                 "required": ["genre", "mood", "energy"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_results",
+            "description": "Check if the recommended songs match the user's request. Returns a list of issues to fix.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_message": {"type": "string"},
+                    "results": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "The list returned by recommend_songs.",
+                    },
+                },
+                "required": ["user_message", "results"],
+            },
+        },
+    },
 ]
 
 
 class MusicAgent:
+    MAX_RETRIES = 2
+
     def __init__(self, songs: List[Dict], model: str = MODEL):
         self.client = OpenAI()
         self.songs = songs
         self.model = model
+        self._last_results: List[Dict] = []
+        self._retry_count = 0
 
-    def _call_tool(self, name: str, args: dict) -> List[Dict]:
-        if name != "recommend_songs":
-            raise ValueError(f"Unknown tool: {name}")
+    def _filter(self, results: list, args: dict) -> list:
+        out = []
+        for s, score, why in results:
+            if args.get("exclude_acoustic") and s.get("acousticness", 0) > 0.6:
+                continue
+            if "min_energy" in args and s.get("energy", 0) < args["min_energy"]:
+                continue
+            if "max_energy" in args and s.get("energy", 0) > args["max_energy"]:
+                continue
+            out.append((s, score, why))
+        return out
+
+    def _recommend(self, args: dict) -> List[Dict]:
         user_prefs = {
             k: v
             for k, v in args.items()
@@ -89,20 +139,74 @@ class MusicAgent:
         k = args.get("k", 5)
         mode = args.get("mode", "balanced")
         diversity = args.get("diversity", True)
-        results = recommend_songs(user_prefs, self.songs, k=k, mode=mode, diversity=diversity)
-        return [
+        results = recommend_songs(user_prefs, self.songs, k=max(k, 10), mode=mode, diversity=diversity)
+        results = self._filter(results, args)[:k]
+        out = [
             {
-                "title": song["title"],
-                "artist": song["artist"],
-                "genre": song["genre"],
-                "mood": song["mood"],
+                "title": s["title"],
+                "artist": s["artist"],
+                "genre": s["genre"],
+                "mood": s["mood"],
+                "energy": s.get("energy"),
+                "acousticness": s.get("acousticness"),
                 "score": score,
-                "why": explanation,
+                "why": why,
             }
-            for song, score, explanation in results
+            for s, score, why in results
         ]
+        self._last_results = out
+        return out
 
-    def run(self, user_message: str, max_steps: int = 5) -> Dict:
+    def _validate(self, user_message: str, results: list) -> Dict:
+        issues = []
+        msg = (user_message or "").lower()
+
+        if not results:
+            issues.append("no songs returned")
+
+        if "no acoustic" in msg or "not acoustic" in msg:
+            bad = [r["title"] for r in results if (r.get("acousticness") or 0) > 0.6]
+            if bad:
+                issues.append(f"user said no acoustic but these are highly acoustic: {bad}")
+
+        if "low energy" in msg or "calm" in msg or "chill" in msg:
+            high = [r["title"] for r in results if (r.get("energy") or 0) > 0.7]
+            if high:
+                issues.append(f"user wanted low energy but these are high energy: {high}")
+
+        if "high energy" in msg or "workout" in msg or "intense" in msg or "gym" in msg:
+            low = [r["title"] for r in results if (r.get("energy") or 0) < 0.6]
+            if low:
+                issues.append(f"user wanted high energy but these are low energy: {low}")
+
+        if not issues:
+            return {"ok": True, "issues": []}
+
+        self._retry_count += 1
+        if self._retry_count > self.MAX_RETRIES:
+            return {
+                "ok": True,
+                "best_effort": True,
+                "issues": issues,
+                "note": "Retry budget used up. Catalog cannot fully satisfy. Write a final answer that acknowledges the limitation honestly.",
+            }
+        return {"ok": False, "issues": issues, "retries_left": self.MAX_RETRIES - self._retry_count + 1}
+
+    def _call_tool(self, name: str, args: dict, user_message: str):
+        if name == "recommend_songs":
+            return self._recommend(args)
+        if name == "validate_results":
+            results = args.get("results") or self._last_results
+            return self._validate(args.get("user_message", user_message), results)
+        raise ValueError(f"Unknown tool: {name}")
+
+    def run(self, user_message: str, max_steps: int = 8) -> Dict:
+        if not user_message or not user_message.strip():
+            return {"answer": "Please tell me what kind of music you want.", "trace": []}
+
+        self._retry_count = 0
+        self._last_results = []
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
@@ -110,20 +214,36 @@ class MusicAgent:
         trace = []
 
         for _ in range(max_steps):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=TOOLS,
-            )
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOLS,
+                )
+            except OpenAIError as e:
+                logger.exception("OpenAI call failed")
+                return {
+                    "answer": f"The AI service hit an error: {e}. Try again in a moment.",
+                    "trace": trace,
+                    "error": str(e),
+                }
+
             msg = response.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
 
             if msg.tool_calls:
                 for tc in msg.tool_calls:
-                    args = json.loads(tc.function.arguments)
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        args = {}
                     trace.append({"type": "tool_call", "name": tc.function.name, "args": args})
-                    result = self._call_tool(tc.function.name, args)
-                    trace.append({"type": "tool_result", "result": result})
+                    try:
+                        result = self._call_tool(tc.function.name, args, user_message)
+                    except Exception as e:
+                        logger.exception("Tool failed")
+                        result = {"error": str(e)}
+                    trace.append({"type": "tool_result", "name": tc.function.name, "result": result})
                     messages.append(
                         {
                             "role": "tool",
@@ -139,7 +259,7 @@ class MusicAgent:
         return {"answer": "Agent stopped without a final answer.", "trace": trace}
 
 
-def run_agent(user_message: str, songs_path: str = None, max_steps: int = 5) -> Dict:
+def run_agent(user_message: str, songs_path: Optional[str] = None, max_steps: int = 8) -> Dict:
     if songs_path is None:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         songs_path = os.path.join(base, "data", "songs.csv")
@@ -158,11 +278,14 @@ if __name__ == "__main__":
     print("=" * 60)
     for step in result["trace"]:
         if step["type"] == "tool_call":
-            print(f"\n[PLAN -> TOOL] {step['name']}({step['args']})")
+            print(f"\n[PLAN -> {step['name']}] args={step['args']}")
         elif step["type"] == "tool_result":
-            print(f"[OBSERVATION] {len(step['result'])} songs returned")
-            for s in step["result"][:3]:
-                print(f"  - {s['title']} by {s['artist']} ({s['genre']}) score={s['score']}")
+            if step["name"] == "recommend_songs":
+                print(f"[OBSERVATION] {len(step['result'])} songs returned")
+                for s in step["result"][:3]:
+                    print(f"  - {s['title']} by {s['artist']} ({s['genre']}) score={s['score']}")
+            else:
+                print(f"[OBSERVATION] validation: {step['result']}")
         elif step["type"] == "final":
             print(f"\n[AGENT FINAL ANSWER]\n{step['content']}")
     print()
