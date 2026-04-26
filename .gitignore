@@ -16,3 +16,19 @@ venv/
 
 # Claude Code internal
 .claude/
+
+# Secrets and environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit secrets
+.streamlit/secrets.toml
