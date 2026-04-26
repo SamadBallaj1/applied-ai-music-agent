@@ -1,9 +1,8 @@
 """
-Agentic layer on top of the rule-based recommender.
+Agent that wraps the rule-based recommender.
 
-The agent reads a natural-language request, picks taste preferences,
-calls recommend_songs, validates the results against the user's
-constraints, and retries with adjustments if something looks off.
+Reads a natural language request, picks taste preferences, calls
+recommend_songs, checks the results, and retries if something is off.
 """
 
 import json
