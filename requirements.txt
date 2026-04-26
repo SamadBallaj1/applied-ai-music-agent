@@ -1,4 +1,6 @@
+openai
 pandas
+python-dotenv
 pytest
 streamlit
 tabulate
