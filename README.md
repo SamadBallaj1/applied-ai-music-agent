@@ -1,28 +1,31 @@
-# Music Recommender Simulation
+# Music Recommender with an Agent on Top
 
-A simple music recommendation system built with Python. It takes a user's taste profile (favorite genre, mood, energy level, etc.) and scores songs from a catalog to suggest the best matches.
+This is my final project for the Codepath Applied AI module. I took my Music Recommender from earlier modules and built an AI agent on top of it that can take natural language requests and pick songs from the catalog.
 
-## How The System Works
+Why it matters to me: recommendation is a small enough problem that I can actually see what the AI is doing, but big enough to feel real. Adding an agent let me see how a planning loop changes the experience compared to just clicking sliders.
 
-Real music apps like Spotify and YouTube use a mix of two approaches to recommend songs. The first is collaborative filtering, which looks at what other users with similar taste are listening to. The second is content-based filtering, which looks at the actual features of songs you already like (genre, tempo, energy, mood) and finds more songs with similar features.
+## Original project (from modules 1-3)
 
-My system uses content-based filtering since we don't have real user data. Here's how it works:
+The original project is the **Music Recommender Simulation**. It's a content-based song scoring system. You give it a taste profile (favorite genre, mood, energy level, etc.) and it scores 20 songs from a CSV catalog and returns the top matches with a short explanation for each pick. It also has multiple ranking modes and a diversity penalty to avoid repeating the same artist.
 
-- Each **Song** has attributes like genre, mood, energy, danceability, valence, acousticness, popularity, and more
-- A **UserProfile** stores what the user prefers: favorite genre, favorite mood, target energy, whether they like acoustic music, etc.
-- The **scoring function** goes through every song in the catalog and gives it a score based on how well it matches the user's preferences
-- Songs get ranked by score, and the top results are returned as recommendations
+## What I added for this final
 
-The scoring works like a point system:
-- Genre match: +2.0 points
-- Mood match: +1.5 points
-- Energy closeness: up to +1.0 (the closer the song's energy is to what the user wants, the more points)
-- Danceability and valence closeness: up to +0.5 each
-- Acoustic preference: +0.5 if the user likes acoustic and the song is acoustic
-- Popularity bonus: up to +0.3
-- Mood tag match: +0.5
+I built an agent layer using OpenAI `gpt-4o-mini` with tool calling. The agent does this for every request:
 
-The system also supports different ranking modes (genre-first, mood-first, energy-focused) and a diversity penalty that prevents too many songs from the same artist or genre showing up in the results.
+1. Reads the user's natural language message.
+2. Pulls out taste preferences and hard constraints (like "no acoustic", "low energy").
+3. Calls the existing `recommend_songs` function as a tool.
+4. Calls a second tool, `validate_results`, that checks the picks against what the user actually asked for.
+5. If validation fails, adjusts the preferences and retries, up to 2 times.
+6. Writes a final friendly answer in plain English.
+
+The original rule-based recommender is untouched. The agent just sits on top.
+
+## Architecture overview
+
+![System architecture](assets/architecture.png)
+
+User input flows into the agent. The agent plans, calls `recommend_songs` (which uses the original scoring code in `src/recommender.py`), then calls `validate_results` to check the picks. If something is off, it loops back and tries again with adjusted parameters. Every step is logged to `logs/agent.log` so I can see exactly what the agent did. There is also a Streamlit UI and a CLI runner that both use the same agent code.
 
 ## Setup
 
@@ -32,77 +35,113 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Running the Demo
+Add your OpenAI key:
+
+```bash
+cp .env.example .env
+# open .env and paste your real key
+```
+
+## How to run
+
+Original demo with three preset profiles (no agent, no API key needed):
 
 ```bash
 python -m src.main
 ```
 
-## Running the Streamlit App
+Agent from the command line:
+
+```bash
+python -m src.main --agent "I want chill study music, no acoustic"
+```
+
+Streamlit app (manual tab + agent tab):
 
 ```bash
 streamlit run app.py
 ```
 
-## Running Tests
+Tests:
 
 ```bash
 pytest
 ```
 
-10 tests covering: scoring logic, sorting, loading, genre matching, different profiles, diversity, and the Recommender class.
+Evaluation harness:
 
-## Experiments I Tried
+```bash
+python -m scripts.eval
+```
 
-### Different User Profiles
+## Sample interactions with the agent
 
-I tested three different profiles to see how the system handles different tastes:
+### 1. Pop workout music
+Input: `I want pop workout music, high energy`
 
-**High-Energy Pop Fan** (genre=pop, mood=happy, energy=0.85)
-- Top results were Sunrise City and Gym Hero, both pop songs. Makes sense.
+Top picks the agent returned:
+- Late Night Flex by D. Ramos (hip-hop)
+- Gym Hero by Max Pulse (pop)
+- Storm Runner by Voltline (rock)
+- Bassline Fury by PRYZM (edm)
+- Iron Tide by Shattered Sun (metal)
 
-**Chill Lofi Listener** (genre=lofi, mood=chill, energy=0.35, likes_acoustic=True)
-- Top results shifted to Library Rain and Midnight Coding. The acoustic bonus helped lofi tracks with high acousticness score higher.
+Validation passed on the first try. Final answer pumped these as workout tracks.
 
-**Intense Rock Lover** (genre=rock, mood=intense, energy=0.92)
-- Storm Runner came out on top. Iron Tide (metal) also ranked high because of the mood and energy match even though genre was different.
+### 2. Lofi study music
+Input: `give me lofi study music`
 
-The biggest takeaway: genre and mood matches dominate the scores. When those don't match, energy closeness becomes the tiebreaker.
+The agent picked lofi and ambient songs (Library Rain, Midnight Coding, Spacewalk Thoughts). Validation passed first try. Confidence 1.0.
 
-### Ranking Modes
+### 3. Chill, no acoustic (the interesting case)
+Input: `chill music but no acoustic stuff`
 
-Switching between modes changed the results noticeably:
-- **Genre-first** mode made genre worth 4.0 points instead of 2.0, so it strongly favored same-genre songs
-- **Mood-first** mode boosted mood to 4.0, which surfaced songs from different genres that shared the same vibe
-- **Energy-focused** mode made energy worth 3.0, so high-energy songs clustered together regardless of genre
+This one is hard. Most chill songs in my catalog are acoustic. The agent tried twice, validation failed both times, then it hit the retry budget. Instead of pretending, it wrote a final answer that admitted the catalog can't fully satisfy and showed the closest non-acoustic options anyway. This is exactly why I added the retry budget.
 
-### Diversity Penalty
+## Design decisions
 
-Without diversity, a pop fan gets two pop songs in the top 3. With diversity on, the second pop song gets penalized and drops down, making room for songs from other genres. This felt more like what a real app would do.
+- **Why an agent instead of RAG.** I already had a working scorer. Adding RAG would mean bringing in a new data source. Adding an agent gave me natural language input, planning, and a place to add validation, without rewriting the scoring math.
+- **Why a separate `validate_results` tool.** I wanted the agent to actually check its own work. Putting the check inside `recommend_songs` would just be a filter. Making it a separate tool forces the agent to reason about whether the output really answers the question.
+- **Retry budget of 2.** My first version looped forever when the catalog couldn't satisfy a request. A small budget plus a "best effort" mode lets it give up gracefully and be honest.
+- **Hard filter for acoustic.** The original recommender only adds a bonus when the user likes acoustic. It does not penalize acoustic when the user dislikes it. So I added an `exclude_acoustic` filter applied after scoring.
+- **Logging to a file.** Every plan step, tool call, observation, retry, and final answer goes to `logs/agent.log` with timestamps. That made debugging the retry loop way easier and gives me something to point at when explaining the system.
 
-## Demo Screenshots
+## Testing summary
 
-### Profile 1: Pop/Happy
-<img src='assets/Screenshot1.png' title='Pop Happy Profile' width='' alt='Pop Happy Profile' />
-
-### Profile 2: Lofi/Chill
-<img src='assets/Screenshot2.png' title='Lofi Chill Profile' width='' alt='Lofi Chill Profile' />
-
-### Profile 3: Rock/Intense
-<img src='assets/Screenshot3.png' title='Rock Intense Profile' width='' alt='Rock Intense Profile' />
-
-## Limitations and Risks
-
-- The catalog is only 20 songs, so the system can't really show its full potential
-- It doesn't understand lyrics or language, so it might recommend a song in a language the user doesn't speak
-- Genre matching is exact. "indie pop" and "pop" are treated as completely different, which isn't great
-- It might over-favor popular songs because of the popularity bonus
-- There's no way to learn from what the user actually listens to or skips
+- 10 pytest tests on the underlying recommender pass (genre match, sorting, diversity, scoring, etc.).
+- The eval harness `scripts/eval.py` runs 8 natural language cases. On my last run, 5/8 passed with average confidence 0.89.
+- The fails were honest fails about the catalog, not the agent itself. The "acoustic folk" case fails because there is only 1 folk and 1 country song. The "no acoustic chill" case fails because almost every chill song is acoustic. Bigger catalog would fix both.
 
 ## Reflection
 
-Building this made me realize how much work goes into even a simple recommender. The hardest part was figuring out the right weights. Too much weight on genre and everything feels repetitive. Too little and the recommendations feel random. Real apps like Spotify probably spend a lot of time tuning these numbers with actual user data.
+The biggest lesson was that an agent is only as good as the data underneath it. The agent code worked fine. Most fails came from the catalog being small and unbalanced. If a user asks for "intense rock" and there is only one rock song, the agent has nothing good to give. It made me realize how much real recommender teams must care about data balance and not just the algorithm.
 
-I also noticed how easy it is for bias to sneak in. My dataset has more pop and lofi songs than classical or folk, so users who like those genres get fewer good matches. In a real product, this could mean some users get a worse experience just because their taste isn't well represented in the data. That's something I didn't think about before this project.
+Building the retry loop was the part where I felt most like an engineer instead of someone calling an API. My first version just looped forever. Adding a retry budget plus a "give up honestly" path felt like real product thinking.
 
-[**Model Card**](model_card.md)
+The validation tool was the surprise for me. Without it, the agent confidently recommended acoustic songs to someone who said "no acoustic". With it, the agent at least tries to fix the mismatch and admits when it can't. Same model, same prompt, very different output.
+
+## Limits and risks
+
+- Catalog is only 20 songs. Some genres have only one song each.
+- The agent depends on OpenAI's API. If the key is missing or the network fails, the agent returns a friendly error instead of crashing.
+- No defense against prompt injection in the user message yet.
+- Costs are tiny but real. Each agent run does between 1 and 7 LLM calls on `gpt-4o-mini`.
+
+## Model card and reflection
+
+See [model_card.md](model_card.md) for the full reflection on bias, misuse, what surprised me, and how I worked with AI tools while building this.
+
+## Demo screenshots (manual mode from the original project)
+
+### Profile 1: Pop / Happy
+<img src='assets/Screenshot1.png' alt='Pop Happy Profile' />
+
+### Profile 2: Lofi / Chill
+<img src='assets/Screenshot2.png' alt='Lofi Chill Profile' />
+
+### Profile 3: Rock / Intense
+<img src='assets/Screenshot3.png' alt='Rock Intense Profile' />
+
+## Loom walkthrough
+
+[Loom video link goes here once recorded in step 12]
