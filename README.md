@@ -6,7 +6,7 @@ My final project for the Codepath Applied AI module. I took my Music Recommender
 
 ![Agent demo](assets/demo.gif)
 
-## Original project (from modules 1-3)
+## Original project 
 
 The base project is the **Music Recommender Simulation**. You give it a taste profile (genre, mood, energy, etc.) and it scores 20 songs from a CSV catalog, returning the top matches with a short explanation per pick. It also has multiple ranking modes and a diversity penalty.
 
