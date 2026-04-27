@@ -142,6 +142,3 @@ See [model_card.md](model_card.md) for the full reflection on bias, misuse, what
 ### Profile 3: Rock / Intense
 <img src='assets/Screenshot3.png' alt='Rock Intense Profile' />
 
-## Loom walkthrough
-
-[paste Loom link here]
