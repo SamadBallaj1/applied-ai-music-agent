@@ -1,0 +1,50 @@
+---
+config:
+  look: neo
+  theme: neo-dark
+  layout: elk
+  flowchart:
+    nodeSpacing: 70
+    rankSpacing: 90
+    curve: basis
+    padding: 18
+---
+flowchart TB
+    UI["Streamlit UI"]
+    CLI["CLI<br/>--agent &quot;...&quot;"]
+    EVAL["scripts/eval.py<br/>8 test cases"]
+
+    AGENT(["Agent<br/>OpenAI gpt-4o-mini<br/>plan + tool calls + retry"])
+
+    REC["recommend_songs<br/>rule-based scoring<br/>data/songs.csv (20 songs)"]
+    VAL["validate_results<br/>retry budget = 2"]
+
+    ANS(["Final answer<br/>plain English to user"])
+    LOG[("logs/agent.log<br/>every step")]
+
+    UI --> AGENT
+    CLI --> AGENT
+    EVAL --> AGENT
+
+    AGENT -->|"score songs"| REC
+    REC -->|"top picks"| AGENT
+
+    AGENT -->|"check picks"| VAL
+    VAL -->|"ok / issues"| AGENT
+
+    AGENT --> ANS
+    AGENT -.-> LOG
+
+    classDef input fill:#1e3a5f,stroke:#4a9eed,stroke-width:1.5px,color:#e5e5e5
+    classDef brain fill:#2d1b69,stroke:#8b5cf6,stroke-width:2px,color:#ffffff
+    classDef tool fill:#1a4d2e,stroke:#22c55e,stroke-width:1.5px,color:#e5e5e5
+    classDef tool2 fill:#1a4d4d,stroke:#06b6d4,stroke-width:1.5px,color:#e5e5e5
+    classDef out fill:#5c3d1a,stroke:#f59e0b,stroke-width:1.5px,color:#e5e5e5
+    classDef log fill:#3a3a3a,stroke:#a0a0a0,stroke-width:1.5px,color:#e5e5e5
+
+    class UI,CLI,EVAL input
+    class AGENT brain
+    class REC tool
+    class VAL tool2
+    class ANS out
+    class LOG log
