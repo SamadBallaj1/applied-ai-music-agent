@@ -63,7 +63,7 @@ All three fails are catalog problems, not agent bugs. That was a useful finding.
 
 ## 9. AI collaboration during this project
 
-I used a few AI tools while building this: Claude inside VS Code, GitHub Copilot in the editor, and OpenAI Codex for some quick refactors. I wrote the architecture and made the design calls myself. The AI helped with boilerplate, syntax I did not remember, and second opinions when I was stuck.
+I used a few AI tools while building this: Claude CLI, GitHub Copilot in the editor, and OpenAI Codex for some quick refactors. I wrote the architecture and made the design calls myself. The AI helped with boilerplate, syntax I did not remember, and second opinions when I was stuck.
 
 **One time the AI suggestion was helpful:** I was trying to figure out how to make the agent check its own work without doing a hard filter inside the recommender. The AI suggested making validation a separate tool that the agent calls explicitly, plus a retry budget so the agent gives up if the catalog cannot satisfy. That two-piece design ended up being the cleanest part of the project. Without the budget my first version looped forever.
 
