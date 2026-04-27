@@ -144,4 +144,4 @@ See [model_card.md](model_card.md) for the full reflection on bias, misuse, what
 
 ## Loom walkthrough
 
-[Loom video link goes here once recorded in step 12]
+[paste Loom link here]
