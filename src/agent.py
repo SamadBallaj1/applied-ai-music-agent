@@ -220,10 +220,10 @@ class MusicAgent:
             return self._validate(args.get("user_message", user_message), results)
         raise ValueError(f"Unknown tool: {name}")
 
-    def run(self, user_message: str, max_steps: int = 8) -> Dict:
+    def _run_iter(self, user_message: str, max_steps: int = 8):
         if not user_message or not user_message.strip():
-            logger.info("RUN | empty input, asking user to clarify")
-            return {"answer": "Please tell me what kind of music you want.", "trace": []}
+            yield {"type": "final", "content": "Please tell me what kind of music you want."}
+            return
 
         self._retry_count = 0
         self._last_results = []
@@ -233,7 +233,6 @@ class MusicAgent:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ]
-        trace = []
 
         for step_num in range(1, max_steps + 1):
             try:
@@ -244,11 +243,9 @@ class MusicAgent:
                 )
             except OpenAIError as e:
                 logger.exception("OPENAI_ERROR | call failed")
-                return {
-                    "answer": f"The AI service hit an error: {e}. Try again in a moment.",
-                    "trace": trace,
-                    "error": str(e),
-                }
+                yield {"type": "error", "content": str(e)}
+                yield {"type": "final", "content": f"The AI service hit an error: {e}. Try again in a moment."}
+                return
 
             msg = response.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
@@ -260,38 +257,55 @@ class MusicAgent:
                     except json.JSONDecodeError:
                         args = {}
                     logger.info(f"STEP {step_num} | PLAN -> TOOL | {tc.function.name} | args={args}")
-                    trace.append({"type": "tool_call", "name": tc.function.name, "args": args})
+                    yield {"type": "tool_call", "name": tc.function.name, "args": args, "step": step_num}
                     try:
                         result = self._call_tool(tc.function.name, args, user_message)
                     except Exception as e:
-                        logger.exception("TOOL_ERROR | tool execution failed")
+                        logger.exception("TOOL_ERROR")
                         result = {"error": str(e)}
 
                     if tc.function.name == "recommend_songs" and isinstance(result, list):
-                        logger.info(f"STEP {step_num} | OBSERVATION | {len(result)} songs returned")
+                        logger.info(f"STEP {step_num} | OBSERVATION | {len(result)} songs")
                     elif tc.function.name == "validate_results" and isinstance(result, dict):
                         if result.get("ok") and not result.get("best_effort"):
                             logger.info(f"STEP {step_num} | VALIDATION_PASS")
                         elif result.get("best_effort"):
-                            logger.warning(f"STEP {step_num} | RETRY_BUDGET_EXHAUSTED | issues={result.get('issues')}")
+                            logger.warning(f"STEP {step_num} | RETRY_BUDGET_EXHAUSTED")
                         else:
-                            logger.warning(f"STEP {step_num} | VALIDATION_FAIL | issues={result.get('issues')} | retries_left={result.get('retries_left')}")
-                    trace.append({"type": "tool_result", "name": tc.function.name, "result": result})
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": json.dumps(result),
-                        }
-                    )
+                            logger.warning(f"STEP {step_num} | VALIDATION_FAIL")
+
+                    yield {"type": "tool_result", "name": tc.function.name, "result": result, "step": step_num}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result),
+                    })
                 continue
 
             logger.info(f"STEP {step_num} | FINAL_ANSWER")
-            trace.append({"type": "final", "content": msg.content})
-            return {"answer": msg.content, "trace": trace}
+            yield {"type": "final", "content": msg.content}
+            return
 
-        logger.warning("RUN | max_steps reached without final answer")
-        return {"answer": "Agent stopped without a final answer.", "trace": trace}
+        logger.warning("RUN | max_steps reached")
+        yield {"type": "final", "content": "Agent stopped without a final answer."}
+
+    def run_stream(self, user_message: str, max_steps: int = 8):
+        for evt in self._run_iter(user_message, max_steps):
+            yield evt
+
+    def run(self, user_message: str, max_steps: int = 8) -> Dict:
+        trace = []
+        answer = ""
+        for evt in self._run_iter(user_message, max_steps):
+            t = evt["type"]
+            if t == "tool_call":
+                trace.append({"type": "tool_call", "name": evt["name"], "args": evt["args"]})
+            elif t == "tool_result":
+                trace.append({"type": "tool_result", "name": evt["name"], "result": evt["result"]})
+            elif t == "final":
+                trace.append({"type": "final", "content": evt["content"]})
+                answer = evt["content"]
+        return {"answer": answer, "trace": trace}
 
 
 def run_agent(user_message: str, songs_path: Optional[str] = None, max_steps: int = 8) -> Dict:
@@ -300,6 +314,14 @@ def run_agent(user_message: str, songs_path: Optional[str] = None, max_steps: in
         songs_path = os.path.join(base, "data", "songs.csv")
     songs = load_songs(songs_path)
     return MusicAgent(songs).run(user_message, max_steps=max_steps)
+
+
+def stream_agent(user_message: str, songs_path: Optional[str] = None, max_steps: int = 8):
+    if songs_path is None:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        songs_path = os.path.join(base, "data", "songs.csv")
+    songs = load_songs(songs_path)
+    yield from MusicAgent(songs).run_stream(user_message, max_steps=max_steps)
 
 
 if __name__ == "__main__":
