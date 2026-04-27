@@ -22,7 +22,28 @@ load_dotenv()
 
 MODEL = "gpt-4o-mini"
 
-logger = logging.getLogger(__name__)
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "agent.log")
+
+
+def _setup_logger() -> logging.Logger:
+    log = logging.getLogger("music_agent")
+    if log.handlers:
+        return log
+    log.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%H:%M:%S")
+    fh = logging.FileHandler(LOG_FILE)
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    log.addHandler(fh)
+    log.addHandler(sh)
+    log.propagate = False
+    return log
+
+
+logger = _setup_logger()
 
 SYSTEM_PROMPT = """You are a music recommendation assistant.
 
@@ -201,10 +222,12 @@ class MusicAgent:
 
     def run(self, user_message: str, max_steps: int = 8) -> Dict:
         if not user_message or not user_message.strip():
+            logger.info("RUN | empty input, asking user to clarify")
             return {"answer": "Please tell me what kind of music you want.", "trace": []}
 
         self._retry_count = 0
         self._last_results = []
+        logger.info(f"RUN | new request | user_message={user_message!r}")
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -212,7 +235,7 @@ class MusicAgent:
         ]
         trace = []
 
-        for _ in range(max_steps):
+        for step_num in range(1, max_steps + 1):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -220,7 +243,7 @@ class MusicAgent:
                     tools=TOOLS,
                 )
             except OpenAIError as e:
-                logger.exception("OpenAI call failed")
+                logger.exception("OPENAI_ERROR | call failed")
                 return {
                     "answer": f"The AI service hit an error: {e}. Try again in a moment.",
                     "trace": trace,
@@ -236,12 +259,23 @@ class MusicAgent:
                         args = json.loads(tc.function.arguments)
                     except json.JSONDecodeError:
                         args = {}
+                    logger.info(f"STEP {step_num} | PLAN -> TOOL | {tc.function.name} | args={args}")
                     trace.append({"type": "tool_call", "name": tc.function.name, "args": args})
                     try:
                         result = self._call_tool(tc.function.name, args, user_message)
                     except Exception as e:
-                        logger.exception("Tool failed")
+                        logger.exception("TOOL_ERROR | tool execution failed")
                         result = {"error": str(e)}
+
+                    if tc.function.name == "recommend_songs" and isinstance(result, list):
+                        logger.info(f"STEP {step_num} | OBSERVATION | {len(result)} songs returned")
+                    elif tc.function.name == "validate_results" and isinstance(result, dict):
+                        if result.get("ok") and not result.get("best_effort"):
+                            logger.info(f"STEP {step_num} | VALIDATION_PASS")
+                        elif result.get("best_effort"):
+                            logger.warning(f"STEP {step_num} | RETRY_BUDGET_EXHAUSTED | issues={result.get('issues')}")
+                        else:
+                            logger.warning(f"STEP {step_num} | VALIDATION_FAIL | issues={result.get('issues')} | retries_left={result.get('retries_left')}")
                     trace.append({"type": "tool_result", "name": tc.function.name, "result": result})
                     messages.append(
                         {
@@ -252,9 +286,11 @@ class MusicAgent:
                     )
                 continue
 
+            logger.info(f"STEP {step_num} | FINAL_ANSWER")
             trace.append({"type": "final", "content": msg.content})
             return {"answer": msg.content, "trace": trace}
 
+        logger.warning("RUN | max_steps reached without final answer")
         return {"answer": "Agent stopped without a final answer.", "trace": trace}
 
 
