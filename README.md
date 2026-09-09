@@ -1,6 +1,5 @@
 # Music Recommender with an Agent on Top
 
-My final project for the Codepath Applied AI module. I took my Music Recommender from earlier modules and put an AI agent on top of it that takes natural language requests and picks songs from the catalog.
 
 ## Demo
 
