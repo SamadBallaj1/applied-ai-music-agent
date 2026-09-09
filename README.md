@@ -43,16 +43,6 @@ pytest                                                      # tests
 python -m scripts.eval                                      # evaluation harness
 ```
 
-## Sample agent interactions
-
-**1. Pop workout music** — `I want pop workout music, high energy`
-Picks: Late Night Flex, Gym Hero, Storm Runner, Bassline Fury, Iron Tide. Validation passed first try.
-
-**2. Chill, no acoustic** — `chill music but no acoustic stuff`
-Most chill songs in my catalog are acoustic. The agent retried twice, hit its retry budget, and wrote an answer that admitted the catalog limit. This is exactly why the budget exists.
-
-**3. Lofi study music** — `give me lofi study music`
-Picked Library Rain, Midnight Coding, Spacewalk Thoughts. Validation passed.
 
 ## Design decisions
 
@@ -68,12 +58,7 @@ Picked Library Rain, Midnight Coding, Spacewalk Thoughts. Validation passed.
 
 ## Reflection
 
-Biggest lesson: the agent is only as good as the data underneath. The agent code worked. Most fails came from the catalog being small and unbalanced. The validation tool was the surprise — same model, same prompt, very different output once the agent had to check its own work.
+Biggest lesson: the agent is only as good as the data underneath. The agent code worked. Most fails came from the catalog being small and unbalanced
 
-## Limits and risks
-
-- Catalog is only 20 songs.
-- Depends on OpenAI's API. Friendly error if it fails.
-- No defense against prompt injection.
 
 See [model_card.md](model_card.md) for the full reflection on bias, misuse, and AI collaboration.
